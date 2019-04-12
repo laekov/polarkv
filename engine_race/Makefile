@@ -1,9 +1,9 @@
 CLEAN_FILES = # deliberately empty, so we can append below.
 CXX=g++
-PLATFORM_LDFLAGS= -lpthread -lrt
-PLATFORM_CXXFLAGS= -std=c++11
+PLATFORM_LDFLAGS= -lpthread -lrt -fopenmp
+PLATFORM_CXXFLAGS= -std=c++11 
 PROFILING_FLAGS=-pg
-OPT=
+OPT= -g
 LDFLAGS += -Wl,-rpath=$(RPATH)
 
 # DEBUG_LEVEL can have two values:

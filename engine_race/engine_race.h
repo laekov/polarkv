@@ -1,13 +1,22 @@
 // Copyright [2018] Alibaba Cloud All rights reserved
 #ifndef ENGINE_RACE_ENGINE_RACE_H_
 #define ENGINE_RACE_ENGINE_RACE_H_
+
 #include <unistd.h>
 
+#include <iostream>
 #include <fstream>
+
 #include <algorithm>
 #include <string>
+#include <set>
+#include <vector>
+#include <unordered_map>
+
+#include <thread>
 #include <mutex>
 #include <condition_variable>
+
 #include "include/engine.h"
 
 namespace polar_race {
@@ -15,6 +24,21 @@ namespace polar_race {
 struct Item {
 	size_t p;
 	unsigned szKey, szVal;
+};
+
+class HashPolarString {
+public:
+size_t operator()(const PolarString& ps) const {
+	static const size_t magic = 37;
+	size_t hash(0), cnt_whole(ps.size() / sizeof(size_t));
+	for (size_t i = 0, *ptr = (size_t*)ps.data(); i < cnt_whole; ++i, ++ptr) {
+		hash = hash * magic + *ptr;
+	}
+	for (size_t i = cnt_whole * sizeof(size_t); i < ps.size(); ++i) {
+		hash = hash * magic + ps.data()[i];
+	}
+	return hash;
+}
 };
 
 class EngineRace : public Engine  {
@@ -26,8 +50,10 @@ private:
 	size_t loaded_size;
 	Item* journal;
 	std::mutex* ready;
-	vector<Item> meta; 
-	vector<char*> datablks; 
+	std::vector<Item> meta; 
+	std::vector<char*> datablks; 
+
+	std::unordered_map<PolarString, size_t, HashPolarString> lookup;
 
 	std::mutex journal_mtx;
 
@@ -36,6 +62,7 @@ private:
 
 	std::ofstream ou_meta, ou_data;
 
+	bool alive;
 	std::thread* p_daemon;
 
 public:
@@ -52,14 +79,14 @@ public:
 			meta_in.seekg(0, meta_in.end);
 			n_items = meta_in.tellg() / sizeof(Item);
 			meta_in.seekg(0, meta_in.beg);
-			metablks.resize(n_items);
-			meta_in.read(meta.data(), n_items * sizeof(Item));
+			meta.resize(n_items);
+			meta_in.read((char*)meta.data(), n_items * sizeof(Item));
 			meta_in.close();
 		} else {
 			n_items = 0;
 		}
 
-		if (metablks.size()) {
+		if (meta.size()) {
 			std::ifstream data_in(dir + ".data", std::ios::binary);
 			data_in.seekg(0, data_in.end);
 			size_t fsz(data_in.tellg());
@@ -75,12 +102,18 @@ public:
 		} else {
 			p_synced = p_current = 0;
 		}
+
+		for (size_t i = 0; i < meta.size(); ++i) {
+			lookup[PolarString(getMemory(meta[i].p), meta[i].szKey)] = i;
+		}
+
 		sz_current = 0;
 		sz_synced = 0;
 
 		ou_meta.open(dir + ".meta", std::ios::binary);
 		ou_data.open(dir + ".data", std::ios::binary);
 
+		alive = true;
 		this->p_daemon = new std::thread(&EngineRace::daemon, this);
 	}
 
@@ -102,7 +135,7 @@ public:
 
 private: 
 	size_t allocMemory(size_t);
-	inline char* getMemory(size_t) {
+	inline char* getMemory(size_t ptr) {
 		size_t blk(ptr / chunk_size), p(ptr % chunk_size);
 		return datablks[blk] + p;
 	}
