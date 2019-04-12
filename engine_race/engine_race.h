@@ -48,6 +48,7 @@ private:
 
 	size_t n_items, n_journal, p_synced, p_current, sz_current, sz_synced;
 	size_t loaded_size;
+	size_t* idxs;
 	Item* journal;
 	std::mutex* ready;
 	std::vector<Item> meta; 
@@ -63,6 +64,7 @@ private:
 	std::ofstream ou_meta, ou_data;
 
 	bool alive;
+	bool flushing;
 	std::thread* p_daemon;
 
 public:
@@ -70,6 +72,7 @@ public:
 
 	explicit EngineRace(const std::string& dir) {
 		journal = new Item[max_journal];
+		idxs = new size_t[max_journal];
 		ready = new std::mutex[max_journal];
 
 		n_journal = 0;
@@ -114,6 +117,7 @@ public:
 		ou_data.open(dir + ".data", std::ios::binary);
 
 		alive = true;
+		flushing = false;
 		this->p_daemon = new std::thread(&EngineRace::daemon, this);
 	}
 
@@ -139,7 +143,7 @@ private:
 		size_t blk(ptr / chunk_size), p(ptr % chunk_size);
 		return datablks[blk] + p;
 	}
-	void copyToMemory(size_t, const PolarString&, const PolarString&);
+	void copyToMemory(size_t, size_t, const PolarString&, const PolarString&);
 	void flush();
 	size_t find(const PolarString& key);
 	void daemon();

@@ -54,13 +54,13 @@ RetCode EngineRace::Write(const PolarString& key, const PolarString& value) {
 	if (idx < max_journal) {
 		ready[idx].lock();
 		journal_mtx.unlock();
-		this->copyToMemory(journal[idx].p, key, value);
+		this->copyToMemory(idx, journal[idx].p, key, value);
 		ready[idx].unlock();
 
 		std::unique_lock<std::mutex> lck(ret_mtx);
 		ret_cv.wait(lck);
 	} else {
-		this->copyToMemory(journal[idx].p, key, value);
+		this->copyToMemory(idx, journal[idx].p, key, value);
 		this->flush();
 		journal_mtx.unlock();
 	}
@@ -81,24 +81,21 @@ size_t EngineRace::allocMemory(size_t totsz) {
 	return res;
 }
 
-void EngineRace::copyToMemory(size_t ptr, const PolarString& key, const PolarString& value) {
+void EngineRace::copyToMemory(size_t idx, size_t ptr, const PolarString& key, const PolarString& value) {
+	idxs[idx] = find(key);
 	char* d(getMemory(ptr));
 	memcpy(d, key.data(), key.size());
 	memcpy(d + key.size(), value.data(), value.size());
 }
 
 void EngineRace::flush() {
+	flushing = true;
 	static const size_t blk_upd_chk = 5;
 	std::set<size_t> blk_to_upd;
-	std::vector<size_t> idxs(n_journal);
 #pragma omp parallel for
 	for (size_t i = 0; i < n_journal; ++i) {
 		ready[i].lock();
 		ready[i].unlock();
-		size_t idx(find(PolarString(getMemory(journal[i].p), journal[i].szKey)));
-		idxs[i] = idx;
-	}
-	for (size_t i = 0; i < n_journal; ++i) {
 		size_t idx(idxs[i]);
 		if (idx == -1u) {
 			idx = meta.size();
@@ -134,6 +131,7 @@ void EngineRace::flush() {
 	sz_synced = sz_current;
 	n_journal = 0;
 	ret_cv.notify_all();
+	flushing = false;
 }
 
 // 4. Read value of a key
@@ -174,11 +172,21 @@ RetCode EngineRace::Range(const PolarString& lower, const PolarString& upper,
 }
 
 void EngineRace::daemon() {
+	size_t interval(1 << 10);
 	while (alive) {
+		if (!flushing && n_journal > 0) {
+			if (interval > 1) {
+				interval >>= 1;
+			}
+		} else {
+			if (interval < (1 << 20)) {
+				interval <<= 1;
+			}
+		}
 		journal_mtx.lock();
 		flush();
 		journal_mtx.unlock();
-		usleep(10);
+		usleep(interval);
 	}
 }
 
