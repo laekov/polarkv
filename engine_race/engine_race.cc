@@ -115,6 +115,7 @@ void EngineRace::flush() {
 		ou_meta.write((char*)meta.data() + p * sizeof(Item),
 				      std::min(meta.size() - p, (size_t)(1lu << blk_upd_chk)) * sizeof(Item));
 	}
+	ou_meta.flush();
 
 	ou_data.seekp(p_synced * chunk_size);
 	for (size_t i = p_synced; i < p_current; ++i) {
@@ -128,6 +129,7 @@ void EngineRace::flush() {
 	} else if (sz_current > 0) {
 		ou_data.write(datablks[p_current], sz_current);
 	}
+	ou_data.flush();
 	p_synced = p_current;
 	sz_synced = sz_current;
 	n_journal = 0;
