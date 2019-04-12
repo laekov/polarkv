@@ -90,10 +90,16 @@ void EngineRace::copyToMemory(size_t ptr, const PolarString& key, const PolarStr
 void EngineRace::flush() {
 	static const size_t blk_upd_chk = 5;
 	std::set<size_t> blk_to_upd;
+	std::vector<size_t> idxs(n_journal);
+#pragma omp parallel for
 	for (size_t i = 0; i < n_journal; ++i) {
 		ready[i].lock();
 		ready[i].unlock();
 		size_t idx(find(PolarString(getMemory(journal[i].p), journal[i].szKey)));
+		idxs[i] = idx;
+	}
+	for (size_t i = 0; i < n_journal; ++i) {
+		size_t idx(idxs[i]);
 		if (idx == -1u) {
 			idx = meta.size();
 			lookup[PolarString(getMemory(journal[i].p), journal[i].szKey)] = idx;
@@ -170,7 +176,7 @@ void EngineRace::daemon() {
 		journal_mtx.lock();
 		flush();
 		journal_mtx.unlock();
-		usleep(1e3);
+		usleep(10);
 	}
 }
 
