@@ -74,7 +74,7 @@ am__v_CCLD_1 =
 
 AM_LINK = $(AM_V_CCLD)$(CXX) $^ $(EXEC_LDFLAGS) -o $@ $(LDFLAGS)
 
-CXXFLAGS += -g
+CXXFLAGS += -g -fopenmp
 
 # This (the first rule) must depend on "all".
 default: all

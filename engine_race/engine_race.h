@@ -17,6 +17,7 @@
 #include <string>
 #include <set>
 #include <vector>
+#include <unordered_set>
 #include <unordered_map>
 
 #include <thread>
@@ -50,12 +51,12 @@ size_t operator()(const PolarString& ps) const {
 class EngineRace : public Engine  {
 public:
 	struct DataBlk {
-		char *pdisk, *pmem;
-		DataBlk(char* _pdisk=0, char* _pmem=0) : pdisk(_pdisk), pmem(_pmem) {}
+		char *pmem;
+		DataBlk(char* _pmem=0) : pmem(_pmem) {}
 	};
 private:
-	static const size_t max_journal = 1 << 10;
-	static const size_t chunk_size = 32 << 20; // 32MB
+	static const size_t max_journal = 6;
+	static const size_t chunk_size = 64 << 20; 
 
 	size_t n_items, n_journal, p_synced, p_current, sz_current, sz_synced;
 	size_t fsz;
@@ -76,6 +77,7 @@ private:
 	std::ofstream ou_meta;
 
 	int fd;
+	char* p_disk;
 
 	bool alive;
 	bool flushing;
@@ -103,7 +105,7 @@ public:
 			n_items = 0;
 		}
 
-		fd = open((dir + ".data").c_str(), O_RDWR | O_CREAT);
+		fd = open((dir + ".data").c_str(), O_CREAT | O_RDWR, 0644);
 		if (fd == -1) {
 			fprintf(stderr, "Error %d\n", errno);
 		}
@@ -119,14 +121,15 @@ public:
 				ftruncate(fd, fsz);
 			}
 
-			char* rd_buf = (char*)mmap(0, fsz, PROT_READ, MAP_SHARED, fd, 0);
+			p_disk = (char*)mmap(0, fsz, PROT_READ, MAP_SHARED, fd, 0);
 
 			for (size_t offset = 0; offset < fsz; offset += chunk_size) {
-				datablks.push_back(DataBlk(rd_buf + offset));
+				datablks.push_back(DataBlk());
 			}
 			loaded_size = datablks.size();
 			p_synced = p_current = datablks.size();
 		} else {
+			p_disk = 0;
 			fsz = 0;
 			p_synced = p_current = 0;
 		}
@@ -163,10 +166,15 @@ public:
 
 private: 
 	size_t allocMemory(size_t);
-	char* getPtr(size_t blk) {
-		if (!datablks[blk].pmem) {
+
+	inline char* getDiskPtr(size_t blk) {
+		return p_disk + blk * chunk_size;
+	}
+
+	inline char* getPtr(size_t blk) {
+		if (datablks[blk].pmem == 0) {
 			datablks[blk].pmem = new char[chunk_size];
-			memcpy(datablks[blk].pmem, datablks[blk].pdisk, chunk_size);
+			memcpy(datablks[blk].pmem, getDiskPtr(blk), chunk_size);
 		}
 		return datablks[blk].pmem;
 	}

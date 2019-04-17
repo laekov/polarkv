@@ -39,6 +39,9 @@ EngineRace::~EngineRace() {
 	delete [] journal;
 	delete [] ready;
 
+	if (p_disk) {
+		munmap(p_disk, fsz);
+	}
 	close(fd);
 }
 
@@ -50,7 +53,7 @@ RetCode EngineRace::Write(const PolarString& key, const PolarString& value) {
 	journal[idx].szVal = value.size();
 	journal[idx].p = this->allocMemory(key.size() + value.size());
 
-	if (idx < max_journal) {
+	if (n_journal < max_journal) {
 		ready[idx].lock();
 		journal_mtx.unlock();
 		this->copyToMemory(idx, journal[idx].p, key, value);
@@ -71,7 +74,7 @@ size_t EngineRace::allocMemory(size_t totsz) {
 		++p_current;
 	}
 	if (datablks.size() <= p_current) {
-		DataBlk ptr(0, new char[chunk_size]);
+		DataBlk ptr(new char[chunk_size]);
 		datablks.push_back(ptr);
 		sz_current = 0;
 	}
@@ -90,8 +93,8 @@ void EngineRace::copyToMemory(size_t idx, size_t ptr, const PolarString& key, co
 void EngineRace::flush() {
 	flushing = true;
 	static const size_t blk_upd_chk = 5;
-	std::set<size_t> blk_to_upd;
-#pragma omp parallel for
+	std::unordered_set<size_t> blk_to_upd;
+
 	for (size_t i = 0; i < n_journal; ++i) {
 		ready[i].lock();
 		ready[i].unlock();
@@ -103,6 +106,7 @@ void EngineRace::flush() {
 		} else {
 			meta[idx] = journal[i];
 		}
+
 		blk_to_upd.insert(idx >> blk_upd_chk);
 	}
 	for (size_t p : blk_to_upd) {
@@ -114,27 +118,31 @@ void EngineRace::flush() {
 	ou_meta.flush();
 
 	if (fsz < (p_current + 1) * chunk_size) {
-	    fsz = (p_current + 1) * chunk_size;
-		ftruncate(fd, fsz);
-	}
-	for (size_t i = p_synced; i <= p_current; ++i) {
-		if (datablks[i].pdisk == 0) {
-			datablks[i].pdisk = (char*)mmap(0, chunk_size, PROT_READ | PROT_WRITE,
-					MAP_SHARED, fd, i * chunk_size);
+		if (p_disk != 0) {
+			munmap(p_disk, fsz);
 		}
+		if (fsz == 0) {
+			fsz = (p_current + 1) * chunk_size;
+		} else {
+			fsz = fsz * 2;
+		}
+		fprintf(stderr, "Truncating\n");
+		ftruncate(fd, fsz);
+		p_disk = (char*)mmap(0, fsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		fprintf(stderr, "Truncate done\n");
 	}
 
 	for (size_t i = p_synced; i < p_current; ++i) {
-		memcpy(datablks[i].pdisk, datablks[i].pmem, chunk_size);
+		memcpy(getDiskPtr(i), datablks[i].pmem, chunk_size);
 	}
 	if (p_synced == p_current) {
 		if (sz_current > sz_synced) {
-			memcpy(datablks[p_synced].pdisk + sz_synced,
+			memcpy(getDiskPtr(p_synced) + sz_synced,
 					datablks[p_synced].pmem + sz_synced,
-					sz_current - sz_synced);
+					sz_current - sz_synced); 
 		}
 	} else if (sz_current > 0) {
-		memcpy(datablks[p_current].pdisk, datablks[p_current].pmem, sz_current);
+		memcpy(getDiskPtr(p_current), datablks[p_current].pmem, sz_current);
 	}
 	p_synced = p_current;
 	sz_synced = sz_current;
@@ -181,14 +189,14 @@ RetCode EngineRace::Range(const PolarString& lower, const PolarString& upper,
 }
 
 void EngineRace::daemon() {
-	size_t interval(1 << 10);
+	size_t interval(1 << 3);
 	while (alive) {
 		if (!flushing && n_journal > 0) {
 			if (interval > 1) {
 				interval >>= 1;
 			}
 		} else {
-			if (interval < (1 << 20)) {
+			if (interval < (1 << 10)) {
 				interval <<= 1;
 			}
 		}
