@@ -41,12 +41,12 @@ unsigned long long hashPolar(const char* s, int n);
 class EngineRace : public Engine  {
 public:
 	struct DataBlk {
-		char *pmem;
+		char *pmem, *pdisk;
 		std::mutex* op;
-		std::atomic<int>* usecnt;
+		int usecnt;
 		clock_t ts;
 
-		DataBlk(char* _pmem=0) : pmem(_pmem), usecnt(0), ts(0) {
+		DataBlk(char* _pmem=0, char* _pdisk=0) : pmem(_pmem), pdisk(_pdisk), usecnt(0), ts(0) {
 			op = new std::mutex();
 		}
 		~DataBlk() {
@@ -56,7 +56,7 @@ public:
 private:
 	static const size_t max_journal = 6;
 	static const size_t chunk_size = 64 << 20; 
-	static const size_t max_chunks = (4ul << 30) / chunk_size;
+	static const size_t max_chunks = (1ul << 30) / chunk_size;
 
 	size_t n_items, n_journal, p_synced, p_current, sz_current, sz_synced;
 	size_t fsz;
@@ -80,10 +80,13 @@ private:
 
 	int fd;
 	char* p_disk;
+    std::mutex p_disk_mtx;
 	
 	bool alive;
 	bool flushing;
 	std::thread* p_daemon;
+	std::thread* p_recyc;
+	std::thread* p_monitor;
 
 public:
 	static RetCode Open(const std::string& name, Engine** eptr);
@@ -119,38 +122,26 @@ private:
 		return p_disk + blk * chunk_size;
 	}
 
-	inline char* getPtrSafe(size_t blk) {
-		++datablks[blk].usecnt;
-		if (datablks[blk].pmem == 0) {
-			datablks[blk].op->lock();
-			if (datablks[blk].pmem == 0) {
-				datablks[blk].pmem = new char[chunk_size];
-				datablks[blk].ts = clock();
-				memcpy(datablks[blk].pmem, getDiskPtr(blk), chunk_size);
-			}
-			datablks[blk].op->unlock();
-		}
-		return datablks[blk].pmem;
-	}
+    char* getPtrSafe(size_t blk, bool safe);
 
-	inline char* getMemory(size_t ptr, bool safe=false) {
+    inline char* getMemory(size_t ptr, bool safe=false) {
 		size_t blk(ptr / chunk_size), p(ptr % chunk_size);
-		if (safe) {
-			return getPtrSafe(blk) + p;
-		} else {
-			return datablks[blk].pmem + p;
-		}
-	}
+        return getPtrSafe(blk, safe) + p;
+    }
 
 	inline void relieveMemory(size_t ptr) {
 		size_t blk(ptr / chunk_size);
-		--datablks[blk].usecnt;
+        datablks[blk].op->lock();
+        --datablks[blk].usecnt;
+        datablks[blk].op->unlock();
 	}
 
 	void copyToMemory(size_t, size_t, const PolarString&, const PolarString&);
 	void flush();
 	size_t find(const PolarString& key);
 	void daemon();
+	void recycle();
+    void monitor();
 	size_t recycleMemory();
 };
 

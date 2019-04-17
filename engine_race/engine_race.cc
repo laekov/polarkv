@@ -89,6 +89,8 @@ void EngineRace::init(const std::string& name) {
 	alive = true;
 	flushing = false;
 	this->p_daemon = new std::thread(&EngineRace::daemon, this);
+	this->p_recyc = new std::thread(&EngineRace::recycle, this);
+	this->p_monitor = new std::thread(&EngineRace::monitor, this);
 }
 
 // 2. Close engine
@@ -104,6 +106,9 @@ EngineRace::~EngineRace() {
 	datablks.resize(0);
 	alive = false;
 	this->p_daemon->join();
+	this->p_recyc->join();
+	this->p_monitor->join();
+
 	delete [] journal;
 	delete [] idxs;
 	delete [] ready;
@@ -154,10 +159,9 @@ size_t EngineRace::allocMemory(size_t totsz) {
 
 void EngineRace::copyToMemory(size_t idx, size_t ptr, const PolarString& key, const PolarString& value) {
 	idxs[idx] = find(key);
-	char* d(getMemory(ptr, true));
+	char* d(getMemory(ptr));
 	memcpy(d, key.data(), key.size());
 	memcpy(d + key.size(), value.data(), value.size());
-	relieveMemory(ptr);
 }
 
 void EngineRace::flush() {
@@ -192,28 +196,32 @@ void EngineRace::flush() {
 	ou_meta.flush();
 
 	if (fsz < (p_current + 1) * chunk_size) {
-		if (p_disk != 0) {
-			munmap(p_disk, fsz);
-		}
+        auto old_fsz(fsz);
 		if (fsz == 0) {
 			fsz = (p_current + 1) * chunk_size;
 		} else {
 			fsz = fsz * 2;
 		}
-		fprintf(stderr, "Truncating\n");
 		ftruncate(fd, fsz);
-		p_disk = (char*)mmap(0, fsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-		fprintf(stderr, "Truncate done\n");
-	}
+		char* new_p_disk = (char*)mmap(0, fsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		if (p_disk != 0) {
+            p_disk_mtx.lock();
+			munmap(p_disk, old_fsz);
+            p_disk = new_p_disk;
+            p_disk_mtx.unlock();
+        } else {
+            p_disk = new_p_disk;
+        }
+    }
 
 	for (size_t i = p_synced; i < p_current; ++i) {
 		memcpy(getDiskPtr(i), datablks[i].pmem, chunk_size);
 	}
 	if (p_synced == p_current) {
 		if (sz_current > sz_synced) {
-			memcpy(getDiskPtr(p_synced) + sz_synced,
-					datablks[p_synced].pmem + sz_synced,
-					sz_current - sz_synced); 
+            char* pdisk(getDiskPtr(p_synced) + sz_synced);
+            char* p_mem(datablks[p_synced].pmem + sz_synced);
+			memcpy(pdisk, p_mem, sz_current - sz_synced); 
 		}
 	} else if (sz_current > 0) {
 		memcpy(getDiskPtr(p_current), datablks[p_current].pmem, sz_current);
@@ -230,9 +238,11 @@ RetCode EngineRace::Read(const PolarString& key, std::string* value) {
 	size_t idx(find(key));
 	if (idx != -1u) {
 		value->resize(meta[idx].szVal);
-		memcpy((char*)value->data(), getMemory(meta[idx].p + meta[idx].szKey), 
-				meta[idx].szVal);
-		return kSucc;
+        size_t ptr(meta[idx].p + meta[idx].szKey);
+        char* dataptr(getMemory(ptr, true));
+		memcpy((char*)value->data(), dataptr, meta[idx].szVal);
+        relieveMemory(ptr);
+        return kSucc;
 	} else {
 		return kNotFound;
 	}
@@ -282,8 +292,8 @@ size_t EngineRace::recycleMemory() {
 	}
 	if (clks.size() > max_chunks) {
 		size_t m = clks.size() - max_chunks, recycled(0);
-		nth_element(clks.begin(), clks.begin() + m, clks.end());
-		for (size_t i = 0; i < m; ++i) {
+        std::sort(clks.begin(), clks.end());
+		for (size_t i = 0; i < n && recycled < m; ++i) {
 			size_t j = clks[i].second;
 			datablks[j].op->lock();
 			if (datablks[j].usecnt == 0) {
@@ -302,7 +312,7 @@ void EngineRace::daemon() {
 	size_t interval(1 << 3);
 	size_t mem_recycled(0);
 	while (alive) {
-		if ((!flushing && n_journal > 0) || mem_recycled) {
+		if (!flushing && n_journal > 0) {
 			if (interval > 1) {
 				interval >>= 1;
 			}
@@ -316,9 +326,62 @@ void EngineRace::daemon() {
 			flush();
 			journal_mtx.unlock();
 		}
-		mem_recycled = recycleMemory();
 		usleep(interval);
 	}
+}
+
+void EngineRace::recycle() {
+	size_t mem_recycled(0);
+    while (alive) {
+		mem_recycled = recycleMemory();
+        sleep(1);
+    }
+}
+
+void EngineRace::monitor() {
+    size_t last_meta(0);
+    while (alive) {
+        size_t activeblk(0);
+        fprintf(stderr, "Refcnt ");
+        for (auto& i : datablks) {
+            if (i.pmem) {
+                ++activeblk;
+                // fprintf(stderr, "%3d", i.usecnt);
+            } else {
+                //fprintf(stderr, "---");
+            }
+        }
+        fprintf(stderr, " %lu / %lu blks  %lu datas %lu dps\n", 
+                activeblk, datablks.size(), meta.size(), 
+                meta.size() - last_meta);
+        last_meta = meta.size();
+        sleep(1);
+    }
+}
+
+char* EngineRace::getPtrSafe(size_t blk, bool safe) {
+    if (safe) {
+        char* ptr;
+        datablks[blk].op->lock();
+        ++datablks[blk].usecnt;
+        ptr = datablks[blk].pmem;
+        datablks[blk].op->unlock();
+        if (ptr == 0) {
+            datablks[blk].op->lock();
+            if (datablks[blk].pmem == 0) {
+                datablks[blk].pmem = new char[chunk_size];
+                p_disk_mtx.lock();
+                memcpy(datablks[blk].pmem, getDiskPtr(blk), chunk_size);
+                p_disk_mtx.unlock();
+            }
+            datablks[blk].op->unlock();
+        }
+    } else if (datablks[blk].pmem == 0) {
+        datablks[blk].pmem = new char[chunk_size];
+        memcpy(datablks[blk].pmem, getDiskPtr(blk), chunk_size);
+    }
+    datablks[blk].ts = clock();
+    return datablks[blk].pmem;
 }
 
 }  // namespace polar_race
