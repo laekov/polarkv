@@ -118,8 +118,10 @@ void EngineRace::flush() {
 		ftruncate(fd, fsz);
 	}
 	for (size_t i = p_synced; i <= p_current; ++i) {
-		datablks[i].pdisk = (char*)mmap(0, chunk_size, PROT_READ | PROT_WRITE,
-				MAP_SHARED, fd, i * chunk_size);
+		if (datablks[i].pdisk == 0) {
+			datablks[i].pdisk = (char*)mmap(0, chunk_size, PROT_READ | PROT_WRITE,
+					MAP_SHARED, fd, i * chunk_size);
+		}
 	}
 
 	for (size_t i = p_synced; i < p_current; ++i) {
@@ -128,7 +130,7 @@ void EngineRace::flush() {
 	if (p_synced == p_current) {
 		if (sz_current > sz_synced) {
 			memcpy(datablks[p_synced].pdisk + sz_synced,
-					datablks[p_synced].pmem+ sz_synced,
+					datablks[p_synced].pmem + sz_synced,
 					sz_current - sz_synced);
 		}
 	} else if (sz_current > 0) {
@@ -194,9 +196,8 @@ void EngineRace::daemon() {
 			journal_mtx.lock();
 			flush();
 			journal_mtx.unlock();
-		} else if (interval > 1) {
-			usleep(interval);
 		}
+		usleep(interval);
 	}
 }
 

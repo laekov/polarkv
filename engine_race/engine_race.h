@@ -8,6 +8,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <errno.h>
 
 #include <iostream>
 #include <fstream>
@@ -102,13 +103,16 @@ public:
 			n_items = 0;
 		}
 
+		fd = open((dir + ".data").c_str(), O_RDWR | O_CREAT);
+		if (fd == -1) {
+			fprintf(stderr, "Error %d\n", errno);
+		}
 		if (meta.size()) {
+
 			std::ifstream data_in(dir + ".data", std::ios::binary);
 			data_in.seekg(0, data_in.end);
 			fsz = data_in.tellg();
 			data_in.close();
-
-			fd = open((dir + ".data").c_str(), O_RDWR);
 
 			if (fsz & (chunk_size - 1)) {
 				fsz = (fsz & chunk_size) + chunk_size;
