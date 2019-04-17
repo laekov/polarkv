@@ -228,6 +228,7 @@ void EngineRace::flush() {
 	}
 	p_synced = p_current;
 	sz_synced = sz_current;
+    n_ops += n_journal;
 	n_journal = 0;
 	ret_cv.notify_all();
 	flushing = false;
@@ -339,7 +340,7 @@ void EngineRace::recycle() {
 }
 
 void EngineRace::monitor() {
-    size_t last_meta(0);
+    size_t last_ops(0);
     while (alive) {
         size_t activeblk(0);
         fprintf(stderr, "Refcnt ");
@@ -351,10 +352,11 @@ void EngineRace::monitor() {
                 //fprintf(stderr, "---");
             }
         }
-        fprintf(stderr, " %lu / %lu blks  %lu datas %lu dps\n", 
-                activeblk, datablks.size(), meta.size(), 
-                meta.size() - last_meta);
-        last_meta = meta.size();
+    n_ops += n_journal;
+        fprintf(stderr, " %lu / %lu blks  %lu datas %lu wps\n", 
+                activeblk, datablks.size(), n_ops,
+                n_ops - last_ops);
+        last_ops = n_ops;
         sleep(1);
     }
 }
