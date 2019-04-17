@@ -28,12 +28,9 @@ EngineRace::~EngineRace() {
 	journal_mtx.lock();
 	flush();
 	journal_mtx.unlock();
-	if (datablks.size()) {
-		if (loaded_size) {
-			delete [] datablks[0];
-		}
-		for (size_t i = loaded_size; i < datablks.size(); ++i) {
-			delete [] datablks[i];
+	for (auto& b : datablks) {
+		if (b.pmem) {
+			delete [] b.pmem;
 		}
 	}
 	datablks.resize(0);
@@ -41,6 +38,8 @@ EngineRace::~EngineRace() {
 	this->p_daemon->join();
 	delete [] journal;
 	delete [] ready;
+
+	close(fd);
 }
 
 // 3. Write a key-value pair into engine
@@ -72,7 +71,7 @@ size_t EngineRace::allocMemory(size_t totsz) {
 		++p_current;
 	}
 	if (datablks.size() <= p_current) {
-		char* ptr(new char[chunk_size]);
+		DataBlk ptr(0, new char[chunk_size]);
 		datablks.push_back(ptr);
 		sz_current = 0;
 	}
@@ -114,19 +113,27 @@ void EngineRace::flush() {
 	}
 	ou_meta.flush();
 
-	ou_data.seekp(p_synced * chunk_size);
+	if (fsz < (p_current + 1) * chunk_size) {
+	    fsz = (p_current + 1) * chunk_size;
+		ftruncate(fd, fsz);
+	}
+	for (size_t i = p_synced; i <= p_current; ++i) {
+		datablks[i].pdisk = (char*)mmap(0, chunk_size, PROT_READ | PROT_WRITE,
+				MAP_SHARED, fd, i * chunk_size);
+	}
+
 	for (size_t i = p_synced; i < p_current; ++i) {
-		ou_data.write(datablks[i], chunk_size);
+		memcpy(datablks[i].pdisk, datablks[i].pmem, chunk_size);
 	}
 	if (p_synced == p_current) {
 		if (sz_current > sz_synced) {
-			ou_data.seekp(p_synced * chunk_size + sz_synced);
-			ou_data.write(datablks[p_synced] + sz_synced, sz_current - sz_synced);
+			memcpy(datablks[p_synced].pdisk + sz_synced,
+					datablks[p_synced].pmem+ sz_synced,
+					sz_current - sz_synced);
 		}
 	} else if (sz_current > 0) {
-		ou_data.write(datablks[p_current], sz_current);
+		memcpy(datablks[p_current].pdisk, datablks[p_current].pmem, sz_current);
 	}
-	ou_data.flush();
 	p_synced = p_current;
 	sz_synced = sz_current;
 	n_journal = 0;
@@ -183,10 +190,13 @@ void EngineRace::daemon() {
 				interval <<= 1;
 			}
 		}
-		journal_mtx.lock();
-		flush();
-		journal_mtx.unlock();
-		usleep(interval);
+		if (n_journal > 0) {
+			journal_mtx.lock();
+			flush();
+			journal_mtx.unlock();
+		} else if (interval > 1) {
+			usleep(interval);
+		}
 	}
 }
 

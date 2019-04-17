@@ -4,6 +4,11 @@
 
 #include <unistd.h>
 
+#include <sys/types.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
 #include <iostream>
 #include <fstream>
 
@@ -42,17 +47,23 @@ size_t operator()(const PolarString& ps) const {
 };
 
 class EngineRace : public Engine  {
+public:
+	struct DataBlk {
+		char *pdisk, *pmem;
+		DataBlk(char* _pdisk=0, char* _pmem=0) : pdisk(_pdisk), pmem(_pmem) {}
+	};
 private:
 	static const size_t max_journal = 1 << 10;
 	static const size_t chunk_size = 32 << 20; // 32MB
 
 	size_t n_items, n_journal, p_synced, p_current, sz_current, sz_synced;
-	size_t loaded_size;
+	size_t fsz;
+	size_t loaded_size, last_chunk_sz;
 	size_t* idxs;
 	Item* journal;
 	std::mutex* ready;
 	std::vector<Item> meta; 
-	std::vector<char*> datablks; 
+	std::vector<DataBlk> datablks; 
 
 	std::unordered_map<PolarString, size_t, HashPolarString> lookup;
 
@@ -61,7 +72,9 @@ private:
 	std::mutex ret_mtx;
 	std::condition_variable ret_cv;
 
-	std::ofstream ou_meta, ou_data;
+	std::ofstream ou_meta;
+
+	int fd;
 
 	bool alive;
 	bool flushing;
@@ -92,17 +105,25 @@ public:
 		if (meta.size()) {
 			std::ifstream data_in(dir + ".data", std::ios::binary);
 			data_in.seekg(0, data_in.end);
-			size_t fsz(data_in.tellg());
-			data_in.seekg(0, data_in.beg);
-			char* rd_buf = new char[fsz];
-			data_in.read(rd_buf, fsz);
+			fsz = data_in.tellg();
 			data_in.close();
+
+			fd = open((dir + ".data").c_str(), O_RDWR);
+
+			if (fsz & (chunk_size - 1)) {
+				fsz = (fsz & chunk_size) + chunk_size;
+				ftruncate(fd, fsz);
+			}
+
+			char* rd_buf = (char*)mmap(0, fsz, PROT_READ, MAP_SHARED, fd, 0);
+
 			for (size_t offset = 0; offset < fsz; offset += chunk_size) {
-				datablks.push_back(rd_buf + offset);
+				datablks.push_back(DataBlk(rd_buf + offset));
 			}
 			loaded_size = datablks.size();
 			p_synced = p_current = datablks.size();
 		} else {
+			fsz = 0;
 			p_synced = p_current = 0;
 		}
 
@@ -114,7 +135,6 @@ public:
 		sz_synced = 0;
 
 		ou_meta.open(dir + ".meta", std::ios::binary);
-		ou_data.open(dir + ".data", std::ios::binary);
 
 		alive = true;
 		flushing = false;
@@ -139,9 +159,17 @@ public:
 
 private: 
 	size_t allocMemory(size_t);
+	char* getPtr(size_t blk) {
+		if (!datablks[blk].pmem) {
+			datablks[blk].pmem = new char[chunk_size];
+			memcpy(datablks[blk].pmem, datablks[blk].pdisk, chunk_size);
+		}
+		return datablks[blk].pmem;
+	}
+
 	inline char* getMemory(size_t ptr) {
 		size_t blk(ptr / chunk_size), p(ptr % chunk_size);
-		return datablks[blk] + p;
+		return getPtr(blk) + p;
 	}
 	void copyToMemory(size_t, size_t, const PolarString&, const PolarString&);
 	void flush();
