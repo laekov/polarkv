@@ -98,6 +98,11 @@ EngineRace::~EngineRace() {
 	journal_mtx.lock();
 	flush();
 	journal_mtx.unlock();
+
+	this->p_daemon->join();
+	this->p_recyc->join();
+	this->p_monitor->join();
+
 	for (auto& b : datablks) {
 		if (b.pmem) {
 			delete [] b.pmem;
@@ -105,9 +110,6 @@ EngineRace::~EngineRace() {
 	}
 	datablks.resize(0);
 	alive = false;
-	this->p_daemon->join();
-	this->p_recyc->join();
-	this->p_monitor->join();
 
 	delete [] journal;
 	delete [] idxs;
@@ -335,15 +337,15 @@ void EngineRace::recycle() {
 	size_t mem_recycled(0);
     while (alive) {
 		mem_recycled = recycleMemory();
-        sleep(1);
+        usleep(500000);
     }
 }
 
 void EngineRace::monitor() {
     size_t last_ops(0);
+    size_t last_loads(0);
     while (alive) {
         size_t activeblk(0);
-        fprintf(stderr, "Refcnt ");
         for (auto& i : datablks) {
             if (i.pmem) {
                 ++activeblk;
@@ -352,11 +354,15 @@ void EngineRace::monitor() {
                 //fprintf(stderr, "---");
             }
         }
-    n_ops += n_journal;
-        fprintf(stderr, " %lu / %lu blks  %lu datas %lu wps\n", 
-                activeblk, datablks.size(), n_ops,
+        n_ops += n_journal;
+        fprintf(stderr, "SS %lu SL %lu ", lookup_short.size(), lookup_long.size());
+        fprintf(stderr, " %lu / %lu blks %lu lps %lu datas %lu wps\n", 
+                activeblk, datablks.size(),
+                n_load - last_loads,
+                n_ops,
                 n_ops - last_ops);
         last_ops = n_ops;
+        last_loads = n_load;
         sleep(1);
     }
 }
@@ -373,6 +379,7 @@ char* EngineRace::getPtrSafe(size_t blk, bool safe) {
             if (datablks[blk].pmem == 0) {
                 datablks[blk].pmem = new char[chunk_size];
                 p_disk_mtx.lock();
+                ++n_load;
                 memcpy(datablks[blk].pmem, getDiskPtr(blk), chunk_size);
                 p_disk_mtx.unlock();
             }
