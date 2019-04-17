@@ -54,7 +54,7 @@ public:
 		}
 	};
 private:
-	static const size_t max_journal = 6;
+	static const size_t max_journal = 32;
 	static const size_t chunk_size = 4 << 20; 
 	static const size_t max_chunks = (8ul << 30) / chunk_size;
 
