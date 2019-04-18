@@ -99,6 +99,7 @@ EngineRace::~EngineRace() {
 	flush();
 	journal_mtx.unlock();
 
+	alive = false;
 	this->p_daemon->join();
 	this->p_recyc->join();
 	this->p_monitor->join();
@@ -109,7 +110,6 @@ EngineRace::~EngineRace() {
 		}
 	}
 	datablks.resize(0);
-	alive = false;
 
 	delete [] journal;
 	delete [] idxs;
@@ -189,13 +189,6 @@ void EngineRace::flush() {
 
 		blk_to_upd.insert(idx >> blk_upd_chk);
 	}
-	for (size_t p : blk_to_upd) {
-		p <<= blk_upd_chk;
-		ou_meta.seekp(p * sizeof(Item));
-		ou_meta.write((char*)meta.data() + p * sizeof(Item),
-				std::min(meta.size() - p, (size_t)(1lu << blk_upd_chk)) * sizeof(Item));
-	}
-	ou_meta.flush();
 
 	if (fsz < (p_current + 1) * chunk_size) {
         auto old_fsz(fsz);
@@ -228,6 +221,15 @@ void EngineRace::flush() {
 	} else if (sz_current > 0) {
 		memcpy(getDiskPtr(p_current), datablks[p_current].pmem, sz_current);
 	}
+
+	for (size_t p : blk_to_upd) {
+		p <<= blk_upd_chk;
+		ou_meta.seekp(p * sizeof(Item));
+		ou_meta.write((char*)meta.data() + p * sizeof(Item),
+				std::min(meta.size() - p, (size_t)(1lu << blk_upd_chk)) * sizeof(Item));
+	}
+	ou_meta.flush();
+
 	p_synced = p_current;
 	sz_synced = sz_current;
     n_ops += n_journal;

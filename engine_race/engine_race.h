@@ -59,7 +59,7 @@ private:
 	static const size_t max_chunks = (8ul << 30) / chunk_size;
 
 	size_t n_items, n_journal, p_synced, p_current, sz_current, sz_synced;
-    size_t n_ops;
+    size_t n_ops, n_load;
 	size_t fsz;
 	size_t loaded_size, last_chunk_sz;
 	size_t* idxs;
@@ -92,7 +92,7 @@ private:
 public:
 	static RetCode Open(const std::string& name, Engine** eptr);
 
-	explicit EngineRace(const std::string& dir) : n_journal(0), n_ops(0) {
+	explicit EngineRace(const std::string& dir) : n_journal(0), n_ops(0), n_load(0) {
 		journal = new Item[max_journal];
 		idxs = new size_t[max_journal];
 		ready = new std::mutex[max_journal];
